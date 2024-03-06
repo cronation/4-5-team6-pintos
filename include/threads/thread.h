@@ -91,8 +91,16 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
+	// P1-PS
+	// 쓰레드가 hold중인 lock의 리스트
+	// donate받을 priority를 업데이트하는데 사용됨
+	struct list lock_list;
+	// 쓰레드가 acquire 대기중인 lock의 holder
+	// 현재 쓰레드의 priority를 donation받음
+	// struct thread *acceptor;
+	int64_t wake_tick; // 깨어날 시각 (P1-AC)
 
-	/* Shared between thread.c and synch.c. */
+	/* Shared between thread.c and synch.c. */ // AND alarm clock (P1-AC)
 	struct list_elem elem;              /* List element. */
 
 #ifdef USERPROG
@@ -142,5 +150,7 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 void do_iret (struct intr_frame *tf);
+
+struct thread *thread_highest_in_list (struct list *thread_list); // P1-PS
 
 #endif /* threads/thread.h */
