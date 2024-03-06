@@ -20,6 +20,7 @@ void sema_self_test (void);
 struct lock {
 	struct thread *holder;      /* Thread holding lock (for debugging). */
 	struct semaphore semaphore; /* Binary semaphore controlling access. */
+	struct list_elem elem; // lock을 hold중인 쓰레드가 자신의 lock_list에 저장 (P1-PS)
 };
 
 void lock_init (struct lock *);
