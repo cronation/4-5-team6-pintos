@@ -27,6 +27,7 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+static struct list sleep_list; // P1-AC
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -39,6 +40,8 @@ static struct lock tid_lock;
 
 /* Thread destruction requests */
 static struct list destruction_req;
+
+#define PRI_MAX_DEPTH 8 // prioriy donation 최대 재귀 깊이 (P1-PS)
 
 /* Statistics. */
 static long long idle_ticks;    /* # of timer ticks spent idle. */
@@ -79,6 +82,52 @@ static tid_t allocate_tid (void);
 // setup temporal gdt first.
 static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
+// P1-AC
+// wake_tick에 대해 오름차순으로 정렬하는데 사용하는 함수
+bool thread_wake_tick_less(const struct list_elem *a,
+	const struct list_elem *b, void *aux) {
+	struct thread *ta = list_entry(a, struct thread, elem);
+	struct thread *tb = list_entry(b, struct thread, elem);
+	if (ta->wake_tick == tb->wake_tick) {
+		// wake_tick이 동일하면 priority에 대해 오름차순
+		return ta->priority > tb->priority;
+	} else {
+		return ta->wake_tick < tb->wake_tick;
+	}
+}
+
+// DEBUG (P1-AC)
+void print_sleepers(int64_t cur_tick) {
+	enum intr_level old_level = intr_disable ();
+
+	struct list_elem *e;
+	struct thread *t;
+
+	printf("[DEBUG] PRINTING ALL SLEEPERS (cur tick=%lld)\n", cur_tick);
+	for (e = list_begin(&sleep_list); e != list_end(&sleep_list); e = e->next) {
+		t = list_entry(e, struct thread, elem);
+		printf("thread#%d at %p, wake_tick=%lld\n", t->tid, e, t->wake_tick);
+	}
+	printf("tail at %p\n", list_end(&sleep_list));
+	intr_set_level (old_level);
+}
+
+// DEBUG (P1-PS)
+void print_ready() {
+	enum intr_level old_level = intr_disable ();
+
+	struct list_elem *e;
+	struct thread *t;
+
+	printf("[DEBUG] PRINTING ALL READY THREADS\n");
+	for (e = list_begin(&ready_list); e != list_end(&ready_list); e = e->next) {
+		t = list_entry(e, struct thread, elem);
+		printf("thread#%d at %p, priority=%s\n", t->tid, e, t->priority);
+	}
+	printf("tail at %p\n", list_end(&ready_list));
+	intr_set_level (old_level);
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -115,6 +164,65 @@ thread_init (void) {
 	init_thread (initial_thread, "main", PRI_DEFAULT);
 	initial_thread->status = THREAD_RUNNING;
 	initial_thread->tid = allocate_tid ();
+
+	list_init(&sleep_list); // P1-AC
+}
+
+// P1-AC
+// 쓰레드를 wake_tick까지 block
+void thread_sleep_until(int64_t wake_tick) {
+	struct thread *t = thread_current();
+	t->wake_tick = wake_tick; // 깨어날 시각
+
+	enum intr_level old_level = intr_disable ();
+
+	// (list_insert_ordered 사용법을 몰라 코드를 직접 가져와서 사용)
+	// 현재 쓰레드를 sleep_list에 삽입
+	// wake_tick에 대해 오름차순으로, priority에 대해 내림차순으로 정렬
+	// struct thread *slp_t;
+	// struct list_elem *e;
+	// for (e = list_begin(&sleep_list); e != list_end(&sleep_list); e = list_next(e)) {
+	// 	slp_t = list_entry(e, struct thread, elem);
+	// 	if (t->wake_tick < slp_t->wake_tick)
+	// 		break;
+	// 	else if (t->wake_tick == slp_t->wake_tick && t->priority > slp_t->priority)
+	// 		break;
+	// }
+	// list_insert(e, &t->elem);
+	list_insert_ordered(&sleep_list, &t->elem, thread_wake_tick_less, NULL);
+	thread_block();
+
+	intr_set_level (old_level);
+}
+
+// P1-AC
+// sleep_list 리스트에서 깨울 시간이 지난 쓰레드들을 unblock
+void thread_wake_sleepers(int64_t cur_tick) {
+	if (list_empty(&sleep_list)) {
+		return;
+	}
+
+	enum intr_level old_level = intr_disable ();
+
+	struct list_elem *e;
+	struct thread *t;
+
+	for (e = list_begin(&sleep_list); e != list_end(&sleep_list); e = e->next) {
+		t = list_entry(e, struct thread, elem);
+		// sleep_list는 wake_tick 오름차순, priority 내림차순으로 정렬되어있음
+		if (cur_tick >= t->wake_tick) {
+			// 깨어날 시각이 지났으면 깨우기
+			e = list_remove(e);
+			e = e->prev; // thread_unblock을 하면 t의 next/prev가 바뀌므로 미리 조정
+			// print_sleepers(cur_tick); /////////////////
+			thread_unblock(t);
+		} else {
+			// 나머지는 시간이 남았으므로 스킵
+			break;
+		}
+	}
+
+	intr_set_level (old_level);
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -204,8 +312,12 @@ thread_create (const char *name, int priority,
 	t->tf.cs = SEL_KCSEG;
 	t->tf.eflags = FLAG_IF;
 
+	// printf("[DBG] thread_create(): created tid=%d, name=%s\n", t->tid, t->name); //////////////
+	
 	/* Add to run queue. */
 	thread_unblock (t);
+
+	thread_yield(); // P1-PS thread_yield()를 thread_unblock() 끝에 넣어도될까?????
 
 	return tid;
 }
@@ -309,15 +421,76 @@ thread_yield (void) {
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
+// void
+// thread_set_priority (int new_priority) {
+// 	thread_current ()->priority = new_priority;
+// }
+
+// P1-PS
+// priority를 낮추고 필요 시 yield
 void
 thread_set_priority (int new_priority) {
+	int ori_priority = thread_current()->priority;
 	thread_current ()->priority = new_priority;
+	// priority에 따라 ready_list에 다시 삽입 (WIP)
+	if (new_priority < ori_priority) {
+		// priority가 더 낮아지면 양보
+		thread_yield();
+	}
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) {
-	return thread_current ()->priority;
+	return thread_don_priority(thread_current(), 0);
+	// return thread_current ()->priority;
+}
+
+// P1-PS
+// t가 dononate받은 priority 반환
+int thread_don_priority(struct thread *t, int depth) {
+	// return t->priority; ////////////////////////
+
+	if (depth > PRI_MAX_DEPTH) {
+		// 최대 재귀 깊이 초과
+		return t->priority;
+	}
+
+	enum intr_level old_level = intr_disable();
+
+	struct list_elem *iter_e, *iter_e2;
+	struct lock *l;
+	struct thread *iter_t = t;
+	int temp_pri, max_pri = t->priority;
+
+	struct list *temp_list;
+	for (iter_e = list_begin(&t->lock_list);
+		iter_e != list_end(&t->lock_list); iter_e = list_next(iter_e)) {
+		// 쓰레드가 hold중인 모든 lock에 대해
+		l = list_entry(iter_e, struct lock, elem);
+
+		temp_list = &l->semaphore.waiters;
+		for (iter_e2 = list_begin(temp_list);
+			iter_e2 != list_end(temp_list); iter_e2 = list_next(iter_e2)) {
+			// lock에 대기중인 모든 쓰레드에 대해
+			iter_t = list_entry(iter_e2, struct thread, elem);
+			temp_pri = thread_don_priority(iter_t, depth +1);
+
+			if (temp_pri > max_pri) {
+				// 가장 큰 donated priority를 선택
+				max_pri = temp_pri;
+			}
+		}
+	}
+
+	intr_set_level(old_level);
+
+	// printf("[DBG] thread_don_priority(): donated priority of thread name = %s is max_pri = %d (from thread name = %s)\n",
+	// 	t->name, max_pri, debug_t->name); /////////////////////////////////
+	// if (max_pri == 26) {
+	// 	ASSERT(0); /////////////////////////////////////
+	// }
+	return max_pri;
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -408,7 +581,94 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
+	list_init(&t->lock_list); // P1-PS
+	// t->pri_donor = NULL; // P1-PS
 	t->magic = THREAD_MAGIC;
+}
+
+// P1-PS
+// thread_list에서 가장 높은 donated priority를 가진 쓰레드를 선택
+struct thread *
+thread_highest_in_list (struct list *thread_list) {
+	// if (list_empty (thread_list))
+	// 	return NULL;
+	// else
+	// 	return list_entry (list_front(thread_list), struct thread, elem);
+	// ?????????????????????????
+
+	if (list_empty (thread_list)) {
+		return NULL;
+	} else {
+		// 가장 높은 priority를 가진 쓰레드를 선택
+		struct thread *t, *iter_t;
+		int temp_pri, max_pri = PRI_MIN -1;
+
+		struct list_elem *iter_e;
+		for (iter_e = list_begin(thread_list);
+				iter_e != list_end(thread_list); iter_e = list_next(iter_e)) {
+			iter_t = list_entry(iter_e, struct thread, elem);
+			temp_pri = thread_don_priority(iter_t, 0);
+			if (temp_pri > max_pri) {
+				t = iter_t;
+				// e = iter_e;
+				max_pri = temp_pri;
+			// }
+			} else if (temp_pri == max_pri && iter_t->priority > t->priority) {
+				// donate받은 priority가 같으므로 기존 priority를 비교
+				t = iter_t;
+				// e = iter_e;
+			}
+		}
+		
+		// ASSERT(is_thread(t)); ///////////////////////////////////
+		return t;
+	}
+}
+
+// TEST
+int thread_test(int x) {
+	return 13 * x;
+}
+
+// P1-PS
+// ready_list에서 가장 높은 donated priority를 가진 쓰레드를 선택
+static struct thread *
+next_thread_to_run (void) {
+	struct thread *t = thread_highest_in_list(&ready_list);
+
+	if (t) {
+		list_remove(&t->elem);
+		return t;
+	} else {
+		return idle_thread;
+	}
+
+	// if (list_empty (&ready_list)) {
+	// 	return idle_thread;
+	// } else {
+	// 	// 가장 높은 priority를 가진 쓰레드를 선택
+	// 	struct thread *t, *iter_t;
+	// 	int temp_pri, max_pri = PRI_MIN -1;
+
+	// 	struct list_elem *e, *iter_e;
+	// 	for (iter_e = list_begin(&ready_list);
+	// 			iter_e != list_end(&ready_list); iter_e = list_next(iter_e)) {
+	// 		iter_t = list_entry(iter_e, struct thread, elem);
+	// 		temp_pri = thread_don_priority(iter_t, 0);
+	// 		if (temp_pri > max_pri) {
+	// 			t = iter_t;
+	// 			e = iter_e;
+	// 			max_pri = temp_pri;
+	// 		}
+	// 		// } else if (temp_pri == max_pri && t->priority > ret_t->priority) {
+	// 		// 	// donate받은 priority가 같으므로 기존 priority를 비교
+	// 		// 	ret_t = t;
+	// 		// }
+	// 	}
+	// 	list_remove(e);
+		
+	// 	return t;
+	// }
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -416,13 +676,13 @@ init_thread (struct thread *t, const char *name, int priority) {
    empty.  (If the running thread can continue running, then it
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
-static struct thread *
-next_thread_to_run (void) {
-	if (list_empty (&ready_list))
-		return idle_thread;
-	else
-		return list_entry (list_pop_front (&ready_list), struct thread, elem);
-}
+// static struct thread *
+// next_thread_to_run (void) {
+// 	if (list_empty (&ready_list))
+// 		return idle_thread;
+// 	else
+// 		return list_entry (list_pop_front (&ready_list), struct thread, elem);
+// }
 
 /* Use iretq to launch the thread */
 void

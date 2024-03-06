@@ -32,6 +32,8 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+#define DON_NEST_DEPTH 8 // lock에서의 priority donation 최대 재귀 깊이
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -59,6 +61,7 @@ sema_init (struct semaphore *sema, unsigned value) {
    sema_down function. */
 void
 sema_down (struct semaphore *sema) {
+	// printf("[DBG] sema_down(): down by thread name = %s\n", thread_current()->name); /////////////////
 	enum intr_level old_level;
 
 	ASSERT (sema != NULL);
@@ -102,6 +105,22 @@ sema_try_down (struct semaphore *sema) {
    and wakes up one thread of those waiting for SEMA, if any.
 
    This function may be called from an interrupt handler. */
+// void
+// sema_up (struct semaphore *sema) {
+// 	enum intr_level old_level;
+
+// 	ASSERT (sema != NULL);
+
+// 	old_level = intr_disable ();
+// 	if (!list_empty (&sema->waiters))
+// 		thread_unblock (list_entry (list_pop_front (&sema->waiters),
+// 					struct thread, elem));
+// 	sema->value++;
+// 	intr_set_level (old_level);
+// }
+
+// P1-PS
+// waiters중에서 가장 donated priority가 높은 쓰레드를 선택해 unblock
 void
 sema_up (struct semaphore *sema) {
 	enum intr_level old_level;
@@ -109,11 +128,63 @@ sema_up (struct semaphore *sema) {
 	ASSERT (sema != NULL);
 
 	old_level = intr_disable ();
-	if (!list_empty (&sema->waiters))
-		thread_unblock (list_entry (list_pop_front (&sema->waiters),
-					struct thread, elem));
+
+	
+	// printf("[DBG] sema_up(): sema.value increased by thread name = %s\n", thread_current()->name); /////////////////
+	struct thread *t = thread_highest_in_list(&sema->waiters);
+	thread_test(14);
+
+	/////////////////
+	// struct thread *t;
+	// if (list_empty (&sema->waiters))
+	// 	t = NULL;
+	// else
+	// 	t = list_entry (list_front(&sema->waiters), struct thread, elem);
+	
+	// printf("[DBG] sema_up(): {%s} wants to up sema\n", thread_current()->name); //////////////
+
+	if (t != NULL) {
+		// printf("[DBG] sema_up(): highest waiter is {%s} with don pri = %d\n", t->name, thread_don_priority(t, 0)); ////////////
+		ASSERT(t->elem.next != NULL);
+		ASSERT(t->elem.prev != NULL);
+		list_remove(&t->elem);
+		thread_unblock(t);
+	}
 	sema->value++;
+
 	intr_set_level (old_level);
+
+	thread_yield();
+
+	// if (!intr_context())
+	// 	thread_yield();
+	
+	// if (!list_empty (&sema->waiters)) {
+	// 	struct list_elem *e, *iter_e;
+	// 	struct thread *t, *iter_t;
+	// 	int temp_pri, max_pri = PRI_MIN -1;
+
+	// 	for (iter_e = list_begin(&sema->waiters);
+	// 		iter_e != list_end(&sema->waiters); iter_e = list_next(e)) {
+	// 		// 모든 watiers 탐색
+	// 		iter_t = list_entry(iter_e, struct thread, elem);
+	// 		// temp_pri = thread_don_priority(iter_t, 0);
+	// 		temp_pri = iter_t->priority;
+	// 		if (temp_pri > max_pri) {
+	// 			max_pri = temp_pri;
+	// 			e = iter_e;
+	// 			t = iter_t;
+	// 		}
+	// 	}
+
+	// 	// printf("[DBG] sema_up(): max_pri = %d (from thread name = %s)\n", max_pri, t->name); ////////////////
+	// 	list_remove(e);
+	// 	thread_unblock(t);
+	// }
+
+	// intr_set_level (old_level);
+
+	// thread_yield();
 }
 
 static void sema_test_helper (void *sema_);
@@ -190,6 +261,8 @@ lock_acquire (struct lock *lock) {
 
 	sema_down (&lock->semaphore);
 	lock->holder = thread_current ();
+	// 쓰레드가 hold중인 lock의 list에 삽입 (P1-PS)
+	list_push_back(&(thread_current()->lock_list), &lock->elem);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -208,6 +281,8 @@ lock_try_acquire (struct lock *lock) {
 	success = sema_try_down (&lock->semaphore);
 	if (success)
 		lock->holder = thread_current ();
+		// 쓰레드가 hold중인 lock의 list에 삽입 (P1-PS)
+		list_push_back(&(thread_current()->lock_list), &lock->elem);
 	return success;
 }
 
@@ -222,6 +297,7 @@ lock_release (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (lock_held_by_current_thread (lock));
 
+	list_remove(&lock->elem); // P1-PS
 	lock->holder = NULL;
 	sema_up (&lock->semaphore);
 }
@@ -295,6 +371,19 @@ cond_wait (struct condition *cond, struct lock *lock) {
    An interrupt handler cannot acquire a lock, so it does not
    make sense to try to signal a condition variable within an
    interrupt handler. */
+// void
+// cond_signal (struct condition *cond, struct lock *lock UNUSED) {
+// 	ASSERT (cond != NULL);
+// 	ASSERT (lock != NULL);
+// 	ASSERT (!intr_context ());
+// 	ASSERT (lock_held_by_current_thread (lock));
+
+// 	if (!list_empty (&cond->waiters))
+// 		sema_up (&list_entry (list_pop_front (&cond->waiters),
+// 					struct semaphore_elem, elem)->semaphore);
+// }
+
+// P1-PS
 void
 cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 	ASSERT (cond != NULL);
@@ -302,9 +391,31 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 	ASSERT (!intr_context ());
 	ASSERT (lock_held_by_current_thread (lock));
 
-	if (!list_empty (&cond->waiters))
-		sema_up (&list_entry (list_pop_front (&cond->waiters),
-					struct semaphore_elem, elem)->semaphore);
+	if (!list_empty (&cond->waiters)) {
+		// 가장 높은 priority를 가진 쓰레드를 선택
+		struct thread *t, *iter_t;
+		struct semaphore_elem *se, *iter_se;
+		int temp_pri, max_pri = PRI_MIN -1;
+
+		struct list_elem *iter_e;
+		for (iter_e = list_begin(&cond->waiters);
+				iter_e != list_end(&cond->waiters); iter_e = list_next(iter_e)) {
+			iter_se = list_entry(iter_e, struct semaphore_elem, elem);
+			iter_t = list_entry(list_begin(&iter_se->semaphore.waiters), struct thread, elem);
+			temp_pri = thread_don_priority(iter_t, 0);
+			if (temp_pri > max_pri) {
+				t = iter_t;
+				se = iter_se;
+				max_pri = temp_pri;
+			} else if (temp_pri == max_pri && iter_t->priority > t->priority) {
+				// donate받은 priority가 같으므로 기존 priority를 비교
+				t = iter_t;
+				se = iter_se;
+			}
+		}
+		list_remove(se);
+		sema_up(&se->semaphore);
+	}
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
