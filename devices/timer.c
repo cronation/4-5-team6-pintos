@@ -19,6 +19,7 @@
 
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
+static int64_t next_wake_tick; // 다음으로 쓰레드를 깨울 시각 (P1-AC)
 
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
@@ -43,6 +44,8 @@ timer_init (void) {
 	outb (0x40, count >> 8);
 
 	intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+
+	next_wake_tick = __INT64_MAX__; // P1-AC
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -89,20 +92,15 @@ timer_elapsed (int64_t then) {
 
 /* Suspends execution for approximately TICKS timer ticks. */
 // P1-AC
+// ticks 시간동안 정지
 void
 timer_sleep (int64_t ticks) {
-	thread_sleep_until(timer_ticks() + ticks);
+	int64_t wake_tick = timer_ticks() + ticks;
+	if (wake_tick < next_wake_tick) {
+		next_wake_tick = wake_tick;
+	}
+	thread_sleep_until(wake_tick);
 }
-
-/* Suspends execution for approximately TICKS timer ticks. */
-// void
-// timer_sleep (int64_t ticks) {
-// 	int64_t start = timer_ticks ();
-
-// 	ASSERT (intr_get_level () == INTR_ON);
-// 	while (timer_elapsed (start) < ticks)
-// 		thread_yield ();
-// }
 
 /* Suspends execution for approximately MS milliseconds. */
 void
@@ -133,7 +131,10 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
 
-	thread_wake_sleepers(ticks); // P1-AC
+	if (ticks >= next_wake_tick) // P1-AC
+		next_wake_tick = thread_wake_sleepers(ticks);
+	if (ticks % TIMER_FREQ == 0) // P1-AS
+		thread_sec(); // load_avg, recent_cpu 업데이트
 	thread_tick ();
 }
 
