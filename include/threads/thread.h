@@ -87,14 +87,16 @@ typedef int tid_t;
  * blocked state is on a semaphore wait list. */
 struct thread {
 	/* Owned by thread.c. */
-	tid_t tid;                          /* Thread identifier. */
-	enum thread_status status;          /* Thread state. */
-	char name[16];                      /* Name (for debugging purposes). */
-	int priority;                       /* Priority. */
+	struct list fd_list;		/* file_fd 구조체를 저장하는 Doubley Linked List */
+	int fd_count;			/* fd를 확인하기 위한 count*/
+	int exit_status
+	struct semaphore fork_sema;   	/* 자식 프로세스의 fork가 완료될 때까지 기다리도록 하기 위한 세마포어 */
+	struct semaphore wait_sema;
+	struct semaphore exit_sema;
 
-	/* Shared between thread.c and synch.c. */
-	struct list_elem elem;              /* List element. */
-
+	struct list child_list;		/* 자식 스레드를 보관하는 리스트 */
+	struct list_elem child_elem;  	/* 자식 리스트 element */
+	struct file *now_file;        	/* 현재 프로세스가 실행 중인 파일을 저장하기 위한 변수  */
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
@@ -108,7 +110,12 @@ struct thread {
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
 };
-
+struct file_fd
+{
+	int fd;				/* fd: 파일 식별자 */
+	struct file *file;		    /* file */
+	struct list_elem fd_elem; /* list 구조체의 구성원 */
+};
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
