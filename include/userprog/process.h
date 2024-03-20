@@ -10,4 +10,7 @@ int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
 
+/* Project 2 - Argument Passing */
+static void argument_passing (struct intr_frame *if_, int argv_cnt, char **argv_list);
+
 #endif /* userprog/process.h */
