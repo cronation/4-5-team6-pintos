@@ -40,7 +40,7 @@ process_init (void) {
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t
 process_create_initd (const char *file_name) {
-	char *fn_copy;
+	char *fn_copy , *save_ptr;
 	tid_t tid;
 
 	/* Make a copy of FILE_NAME.
@@ -49,6 +49,9 @@ process_create_initd (const char *file_name) {
 	if (fn_copy == NULL)
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
+    file_name=strtok_r(file_name,' ',&save_ptr);
+
+
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
@@ -163,7 +166,19 @@ error:
 int
 process_exec (void *f_name) {
 	char *file_name = f_name;
+	char *file_copy = file_name
 	bool success;
+    char *token, *save_ptr, ;
+    int argc=0, size=0;
+    for(token = strtok_r(file_name, ' ',save_ptr); token; token=strtok_r(NULL,' ',save_ptr)){
+        argc++;
+    }
+    char *argv[argc], *argv_addr[argc];
+    token = strtok_r(file_copy, ' ',save_ptr);
+    for(int i = 0; i < argc; i++){
+        argv[i] = token;
+        token=strtok_r(NULL,' ',save_ptr);
+    }
 
 	/* We cannot use the intr_frame in the thread structure.
 	 * This is because when current thread rescheduled,
@@ -175,15 +190,42 @@ process_exec (void *f_name) {
 
 	/* We first kill the current context */
 	process_cleanup ();
-
 	/* And then load the binary */
 	success = load (file_name, &_if);
+	int len = 0;
+    //-------------------------------------
+    for(int i = argc - 1; i >= 0; i--)
+    {
+        len = strlen(argv[argc]) + 1;
+        _if.rsp -= len;
+        strlcpy(_if.rsp, argv[i], len);
+        size+=len;
+        argv_addr[i]=_if.rsp;
+    }
 
+    //word align
+    memset(_if.rsp & ~7, 0, _if.rsp - (_if.rsp & ~7));
+    _if.rsp = _if.rsp & ~7;
+    _if.rsp -= 8;
+    memset(_if.rsp, 0, 8);
+
+    for(int i = argc - 1; i >= 0; i--)
+    {
+        _if.rsp -= 8;
+        memcpy(_if.rsp,argv_addr[i],8);
+    }
+    _if.rsp -= 8;
+    memcpy(_if.rsp,0,8);
+
+    _if.R.rdi = argc;
+    _if.R.rsi = _if.rsp + 8;
+
+    //--------------------------------------
 	/* If load failed, quit. */
 	palloc_free_page (file_name);
 	if (!success)
 		return -1;
-
+    hex_dump(_if.rsp, _if.rsp, USER_STACK - _if.rsp, true);
 	/* Start switched process. */
 	do_iret (&_if);
 	NOT_REACHED ();
@@ -336,7 +378,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	/* Open executable file. */
-	file = filesys_open (file_name);
+	file = filesys_open (thread_current()->name);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
@@ -539,6 +581,7 @@ static bool
 setup_stack (struct intr_frame *if_) {
 	uint8_t *kpage;
 	bool success = false;
+
 
 	kpage = palloc_get_page (PAL_USER | PAL_ZERO);
 	if (kpage != NULL) {
