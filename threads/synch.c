@@ -32,6 +32,12 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+// P1-PS
+static void *insert_lock_to_list(struct thread *cur_t, struct lock *lock);
+static void remove_lock_from_list(struct lock *lock);
+static bool cond_waiter_priority_less(const struct list_elem *a,
+	const struct list_elem *b, void *aux);
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -116,6 +122,7 @@ sema_up (struct semaphore *sema) {
     thread_unblock (list_entry (list_pop_front (&sema->waiters), struct thread, elem));
   }
 	sema->value++;
+	
 	intr_set_level (old_level);
   
   thread_preemption ();
@@ -214,8 +221,15 @@ lock_try_acquire (struct lock *lock) {
 	ASSERT (!lock_held_by_current_thread (lock));
 
 	success = sema_try_down (&lock->semaphore);
-	if (success)
-		lock->holder = thread_current ();
+	if (success) {
+		enum intr_level old_level = intr_disable();
+
+		struct thread *t = thread_current();
+		lock->holder = t;
+		insert_lock_to_list(t, lock);
+
+		intr_set_level(old_level);
+	}
 	return success;
 }
 

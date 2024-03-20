@@ -19,6 +19,7 @@
 
 /* Number of timer ticks since OS booted. */
 static int64_t ticks;
+static int64_t next_wake_tick; // 다음으로 쓰레드를 깨울 시각 (P1-AC)
 
 /* Number of loops per timer tick.
    Initialized by timer_calibrate(). */
@@ -43,6 +44,8 @@ timer_init (void) {
 	outb (0x40, count >> 8);
 
 	intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+
+	next_wake_tick = __INT64_MAX__; // P1-AC
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
