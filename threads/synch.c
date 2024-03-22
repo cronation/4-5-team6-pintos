@@ -250,7 +250,7 @@ donate_priority (struct lock *lock) {
     curr->wait_on_lock = lock;
     
     if (curr->priority <= holder->priority)                        //* priority donate
-      return
+      return;
     
     old_level = intr_disable ();
     

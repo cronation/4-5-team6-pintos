@@ -158,8 +158,8 @@ exec (const char *file) {
     exit(-1);
 
   palloc_free_page(file_name);
+
   NOT_REACHED();
-  return 0;
 }
 
 static int
@@ -209,37 +209,33 @@ remove (const char *file) {
 
 static int
 filesize (int fd) {
-  int size = -1;
-
   if (fd <= 1)
-    return size;
+    return -1;
 
   struct thread *curr = thread_current ();
   struct file *f = curr->fd_table[fd];
 
   if (f == NULL)
-    return size;
+    return -1;
 
-  size = file_length(f);
+  int size = file_length(f);
   return size;
 }
 
 static int
 read (int fd, void *buffer, unsigned length) {
-  int read_size = -1;
-
   check_addr(buffer);
   if (fd > FD_COUNT_LIMIT || fd == STDOUT_FILENO || fd < 0)
-    return read_size;
+    return -1;
 
   struct thread *curr = thread_current ();
   struct file *f = curr->fd_table[fd];
 
   if (f == NULL)
-    return read_size;
+    return -1;
 
   lock_acquire(&filesys_lock);
-  read_size = file_read(f, buffer, length);
+  int read_size = file_read(f, buffer, length);
   lock_release(&filesys_lock);
 
   return read_size;
@@ -247,11 +243,9 @@ read (int fd, void *buffer, unsigned length) {
 
 static int
 write (int fd, const void *buffer, unsigned length) {
-  int write_size = -1;
-
   check_addr(buffer);
   if (fd > FD_COUNT_LIMIT || fd <= 0)
-    return write_size;
+    return -1;
 
   if (fd == 1) {
     putbuf(buffer, length);
@@ -262,15 +256,16 @@ write (int fd, const void *buffer, unsigned length) {
     struct file *f = curr->fd_table[fd];
 
     if (f == NULL)
-      return write_size;
+      return -1;
 
     lock_acquire(&filesys_lock);
-    write_size = file_write(f, buffer, length);
+    int write_size = file_write(f, buffer, length);
     lock_release(&filesys_lock);
-  }
-  return write_size;
 
+    return write_size;
+  }
 }
+
 static void
 seek (int fd, unsigned position) {
   struct thread *curr = thread_current ();

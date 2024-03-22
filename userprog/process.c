@@ -193,13 +193,13 @@ __do_fork (void *aux) {
     curr->fd_table[i] = f;
   }
   curr->fd_idx = parent->fd_idx;
-  sema_up(&curr->load_sema);
   /* ------------------------------- */
 
 	process_init ();
 
 	/* Finally, switch to the newly created process. */
 	if (succ)
+    sema_up(&curr->load_sema);                        //* fork
 		do_iret (&if_);
 
 error:
@@ -328,7 +328,7 @@ process_exit (void) {
     close(fd);
   }
 
-  palloc_free_page(curr->fd_table);
+  palloc_free_multiple(curr->fd_table, FDT_PAGES);
   file_close(curr->runn_file);
 
 	process_cleanup ();
